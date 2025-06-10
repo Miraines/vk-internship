@@ -32,17 +32,17 @@ func TestTaskProcessing(t *testing.T) {
 func TestAddRemoveWorkers(t *testing.T) {
 	p := New(0)
 
-	if len(p.workers) != 1 {
-		t.Fatalf("expected 1 worker start, got %d", len(p.workers))
+	if got := p.WorkerCount(); got != 1 {
+		t.Fatalf("expected 1 worker start, got %d", got)
 	}
 	id := p.AddWorker()
-	if len(p.workers) != 2 {
-		t.Fatalf("AddWorker: expected 2, got %d", len(p.workers))
+	if got := p.WorkerCount(); got != 2 {
+		t.Fatalf("AddWorker: expected 2, got %d", got)
 	}
 	p.RemoveWorker(id)
 	time.Sleep(20 * time.Millisecond)
-	if len(p.workers) != 1 {
-		t.Fatalf("RemoveWorker: expected 1, got %d", len(p.workers))
+	if got := p.WorkerCount(); got != 1 {
+		t.Fatalf("RemoveWorker: expected 1, got %d", got)
 	}
 	p.Shutdown()
 }
@@ -70,18 +70,18 @@ func TestAutoScaling(t *testing.T) {
 	grew := false
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if len(p.workers) > 1 {
+		if p.WorkerCount() > 1 {
 			grew = true
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	if !grew {
-		t.Fatalf("autoscale up never happened, workers=%d", len(p.workers))
+		t.Fatalf("autoscale up never happened, workers=%d", p.WorkerCount())
 	}
 
 	time.Sleep(600 * time.Millisecond)
-	if workers := len(p.workers); workers < 1 || workers > 4 {
+	if workers := p.WorkerCount(); workers < 1 || workers > 4 {
 		t.Fatalf("autoscale produced invalid count: %d", workers)
 	}
 }

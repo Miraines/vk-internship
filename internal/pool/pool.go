@@ -93,6 +93,12 @@ func (p *WorkerPool) Shutdown() {
 	p.wg.Wait()
 }
 
+func (p *WorkerPool) WorkerCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.workers)
+}
+
 func (p *WorkerPool) addWorkerUnlocked() int {
 	id := p.nextID
 	p.nextID++
