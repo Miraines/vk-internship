@@ -2,62 +2,70 @@ package pool
 
 import (
 	"context"
-	"fmt"
 	"sync"
 )
 
+type Handler func(ctx context.Context, job string)
+
 type WorkerPool struct {
+	jobs chan string
+
+	opts *options
+
 	mu      sync.Mutex
 	workers map[int]*worker
 	nextID  int
-	jobs    chan string
-	wg      sync.WaitGroup
-	ctx     context.Context
-	cancel  context.CancelFunc
+
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 type worker struct {
-	id   int
-	jobs <-chan string
-	quit chan struct{}
-	wg   *sync.WaitGroup
+	id       int
+	parent   *WorkerPool
+	quitChan chan struct{}
 }
 
-func New(queueSize int) *WorkerPool {
+func New(queueSize int, setters ...Option) *WorkerPool {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &WorkerPool{
-		workers: make(map[int]*worker),
+
+	opt := defaultOptions()
+	for _, s := range setters {
+		s(opt)
+	}
+
+	p := &WorkerPool{
 		jobs:    make(chan string, queueSize),
+		opts:    opt,
+		workers: make(map[int]*worker),
 		ctx:     ctx,
 		cancel:  cancel,
 	}
+
+	for i := 0; i < opt.initialWorkers; i++ {
+		p.addWorkerUnlocked()
+	}
+	if opt.autoScale.enabled {
+		go p.autoScalerLoop()
+	}
+
+	return p
 }
 
-func (p *WorkerPool) Submit(s string) {
+func (p *WorkerPool) SubmitContext(ctx context.Context, s string) {
 	select {
 	case p.jobs <- s:
-	case <-p.ctx.Done():
+	case <-ctx.Done():
 	}
 }
+
+func (p *WorkerPool) Submit(s string) { p.SubmitContext(context.Background(), s) }
 
 func (p *WorkerPool) AddWorker() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	id := p.nextID
-	p.nextID++
-
-	w := &worker{
-		id:   id,
-		jobs: p.jobs,
-		quit: make(chan struct{}),
-		wg:   &p.wg,
-	}
-	p.workers[id] = w
-	p.wg.Add(1)
-	go w.run()
-
-	return id
+	return p.addWorkerUnlocked()
 }
 
 func (p *WorkerPool) RemoveWorker(id int) {
@@ -67,37 +75,57 @@ func (p *WorkerPool) RemoveWorker(id int) {
 		delete(p.workers, id)
 	}
 	p.mu.Unlock()
-
 	if ok {
-		close(w.quit)
+		close(w.quitChan)
 	}
 }
 
 func (p *WorkerPool) Shutdown() {
 	p.cancel()
+	close(p.jobs)
 
 	p.mu.Lock()
-	for id, w := range p.workers {
-		delete(p.workers, id)
-		close(w.quit)
+	for _, w := range p.workers {
+		close(w.quitChan)
 	}
 	p.mu.Unlock()
-
-	close(p.jobs)
 
 	p.wg.Wait()
 }
 
-func (w *worker) run() {
-	defer w.wg.Done()
+func (p *WorkerPool) addWorkerUnlocked() int {
+	id := p.nextID
+	p.nextID++
+
+	w := &worker{
+		id:       id,
+		parent:   p,
+		quitChan: make(chan struct{}),
+	}
+	p.workers[id] = w
+	p.wg.Add(1)
+	go w.loop()
+	p.opts.logger.Printf("[pool] worker %d started (total=%d)", id, len(p.workers))
+	return id
+}
+
+func (w *worker) loop() {
+	defer func() {
+		w.parent.wg.Done()
+		w.parent.opts.logger.Printf("[pool] worker %d stopped", w.id)
+	}()
+
+	handler := w.parent.opts.composeMiddleware(w.parent.opts.userHandler)
+
 	for {
 		select {
-		case s, ok := <-w.jobs:
+		case job, ok := <-w.parent.jobs:
 			if !ok {
 				return
 			}
-			fmt.Printf("[worker %d] %s\n", w.id, s)
-		case <-w.quit:
+			handler(w.parent.ctx, job)
+
+		case <-w.quitChan:
 			return
 		}
 	}
