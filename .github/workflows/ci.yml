@@ -4,14 +4,17 @@ on:
   push:
     branches:
       - main
+      - master
   pull_request:
     branches:
       - main
+      - master
 
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
+
       - name: Checkout code
         uses: actions/checkout@v3
 
@@ -23,6 +26,15 @@ jobs:
 
       - name: Verify Go modules
         run: go mod verify
+
+      - name: Run go fmt
+        run: |
+          fmt_output=$(go fmt ./...)
+          if [ -n "$fmt_output" ]; then
+            echo "::error file=.,line=1::Code is not formatted. Run 'go fmt ./...' to fix."
+            echo "$fmt_output"
+            exit 1
+          fi
 
       - name: Run go vet
         run: go vet ./...
